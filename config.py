@@ -1,29 +1,15 @@
 import os
 from dotenv import load_dotenv
-#from langchain_openai import ChatOpenAI
 from langchain_openai import AzureChatOpenAI
-
 
 load_dotenv()
 
-MAX_RETRIES = 3
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+MAX_RETRIES = 3
 
 AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
 LLM_MODEL = "gpt-4.1-mini"
-
-
-
-# def get_llm():
-#     return ChatOpenAI(
-#         base_url="https://openrouter.ai/api/v1",
-#         model="stepfun/step-3.5-flash:free",
-#         api_key=OPENROUTER_API_KEY,
-#         temperature=0,
-#     )
-
 
 
 _llm_instance = None
@@ -41,9 +27,3 @@ def get_llm():
         )
 
     return _llm_instance
-
-
-
-
-
-
