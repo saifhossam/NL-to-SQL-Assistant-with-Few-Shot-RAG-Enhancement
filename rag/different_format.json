@@ -1,0 +1,42 @@
+[
+  {
+    "Q": "How many customers are in Brazil?",
+    "A": "SELECT COUNT(*) FROM \"Customer\" WHERE \"Country\" = 'Brazil';"
+  },
+  {
+    "Q": "List all albums by AC/DC",
+    "A": "SELECT \"Title\" FROM \"Album\" JOIN \"Artist\" ON \"Album\".\"ArtistId\" = \"Artist\".\"ArtistId\" WHERE \"Artist\".\"Name\" = 'AC/DC';"
+  },
+  {
+    "Q": "Total sales per country",
+    "A": "SELECT \"BillingCountry\", SUM(\"Total\") FROM \"Invoice\" GROUP BY \"BillingCountry\";"
+  },
+  {
+    "Q": "What are the names of all tracks in the 'Rock' genre?",
+    "A": "SELECT t.\"Name\" FROM \"Track\" t JOIN \"Genre\" g ON t.\"GenreId\" = g.\"GenreId\" WHERE g.\"Name\" = 'Rock';"
+  },
+  {
+    "Q": "How many invoices were issued in 2009?",
+    "A": "SELECT COUNT(*) FROM \"Invoice\" WHERE strftime('%Y', \"InvoiceDate\") = '2009';"
+  },
+  {
+    "Q": "List all customers with their full names and email addresses",
+    "A": "SELECT \"FirstName\" || ' ' || \"LastName\" AS \"FullName\", \"Email\" FROM \"Customer\";"
+  },
+  {
+    "Q": "What is the total sales amount for each employee's customers?",
+    "A": "SELECT e.\"EmployeeId\", e.\"FirstName\" || ' ' || e.\"LastName\" AS \"EmployeeName\", SUM(i.\"Total\") AS \"TotalSales\" FROM \"Employee\" e JOIN \"Customer\" c ON e.\"EmployeeId\" = c.\"SupportRepId\" JOIN \"Invoice\" i ON c.\"CustomerId\" = i.\"CustomerId\" GROUP BY e.\"EmployeeId\";"
+  },
+  {
+    "Q": "Find the most popular genre by number of tracks sold",
+    "A": "SELECT g.\"Name\", COUNT(il.\"TrackId\") AS \"TracksSold\" FROM \"Genre\" g JOIN \"Track\" t ON g.\"GenreId\" = t.\"GenreId\" JOIN \"InvoiceLine\" il ON t.\"TrackId\" = il.\"TrackId\" GROUP BY g.\"Name\" ORDER BY \"TracksSold\" DESC LIMIT 1;"
+  },
+  {
+    "Q": "List all tracks that are longer than 5 minutes",
+    "A": "SELECT \"Name\", \"Milliseconds\" / 60000 AS \"Minutes\" FROM \"Track\" WHERE \"Milliseconds\" > 300000;"
+  },
+  {
+    "Q": "How many albums does each artist have?",
+    "A": "SELECT ar.\"Name\", COUNT(al.\"AlbumId\") AS \"AlbumCount\" FROM \"Artist\" ar LEFT JOIN \"Album\" al ON ar.\"ArtistId\" = al.\"ArtistId\" GROUP BY ar.\"Name\" ORDER BY \"AlbumCount\" DESC;"
+  }
+]

@@ -2,9 +2,9 @@ from chains import table_selector_chain
 from database import list_all_tables
 
 
-def get_relevant_tables(question):
- 
-    tables = list_all_tables()
+def get_relevant_tables(question, db_url: str = None):
+
+    tables = list_all_tables(db_url=db_url)
 
     response = table_selector_chain.invoke({
         "question": question,

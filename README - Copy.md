@@ -18,7 +18,6 @@ SQL_C_/
 ├── sql_validator.py        # SQL safety and syntax validation
 ├── table_selector.py       # Selects relevant tables for a given question
 ├── answer_generator.py     # Converts SQL results to natural language answers
-├── test_latency.py         # Check the latency of the LLM
 ├── rag/
 │   ├── embeddings.py       # HuggingFace embedding model
 │   ├── vectorstore.py      # Builds ChromaDB vectorstore from few-shot examples
@@ -101,30 +100,29 @@ cp .env.example .env
 ```
 
 ```env
-AZURE_ENDPOINT=your_azure_endpoint_here
-AZURE_API_KEY=your_azure_api_key_here
-DB_URL=postgresql://user:password@host:port/dbname     # This could also be added to the Streamlit user interface
+CEREBRAS_API_KEY=your_cerebras_api_key_here
+DB_URL=postgresql://user:password@host:port/dbname
 ```
 
-### 5. Run the app
+### 5. Build the RAG vectorstore
+
+Run this once to embed the few-shot examples into ChromaDB:
+
+```bash
+python rag/vectorstore.py
+```
+
+### 6. Run the app
 
 ```bash
 streamlit run app.py
 ```
 
-### 6. Add your database link
-
-```bash
-If you already done that in the .env file, it will be used as default, it can be changed though.
-```
-
-### 7. Upload a JSON file of examples of your database (optional)
-
 ---
 
 ## 🧠 Few-Shot RAG Enhancement
 
-The system uses a local ChromaDB vector store to store the embedded example question-SQL pairs:
+The system uses a local ChromaDB vector store populated with example question-SQL pairs stored in `rag/example_data.json`:
 
 ```json
 [
@@ -137,7 +135,7 @@ The system uses a local ChromaDB vector store to store the embedded example ques
 
 At query time, the 3 most semantically similar examples are retrieved and injected into the SQL generation prompt — significantly improving accuracy for domain-specific or complex queries.
 
-To add your own examples, upload a JSON file to the Streamlit interface.
+To add your own examples, edit `rag/example_data.json` and re-run `python rag/vectorstore.py`.
 
 ---
 
@@ -155,8 +153,7 @@ Before any query is executed, it passes through a three-layer validation pipelin
 
 | Variable | Description |
 |---|---|
-| `AZURE_ENDPOINT` | Endpoint for Microsoft Azure |
-| `AZURE_API_KEY` | API key for Azure inference |
+| `CEREBRAS_API_KEY` | API key for Cerebras inference |
 | `DB_URL` | PostgreSQL connection string (SQLAlchemy format) |
 
 LLM and embedding settings are in `config.py` and `rag/embeddings.py`.
@@ -168,7 +165,7 @@ LLM and embedding settings are in `config.py` and `rag/embeddings.py`.
 - **[LangChain](https://www.langchain.com/)** — Chain orchestration and prompt management
 - **[ChromaDB](https://www.trychroma.com/)** — Local vector store for few-shot examples
 - **[HuggingFace](https://huggingface.co/)** — `all-MiniLM-L6-v2` for example embeddings
-- **[Microsoft Azure](https://portal.azure.com/)** — LLM inference (OpenAI-compatible API)
+- **[Cerebras](https://www.cerebras.ai/)** — LLM inference (OpenAI-compatible API)
 - **[PostgreSQL](https://www.postgresql.org/)** — Target database
 - **[SQLAlchemy](https://www.sqlalchemy.org/)** — Database connection and query execution
 - **[Streamlit](https://streamlit.io/)** — Web interface

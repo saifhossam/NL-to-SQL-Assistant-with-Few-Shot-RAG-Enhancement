@@ -14,10 +14,9 @@ def contains_forbidden_keywords(sql_query):
     return False, None
 
 
-def validate_tables_exist(sql_query):
-    tables = list_all_tables()
+def validate_tables_exist(sql_query, db_url: str = None):
+    tables = list_all_tables(db_url=db_url)
 
-    # Extract table names from FROM and JOIN
     found_tables = re.findall(r'FROM\s+"?(\w+)"?|JOIN\s+"?(\w+)"?', sql_query, re.IGNORECASE)
 
     extracted = []
@@ -34,8 +33,8 @@ def validate_tables_exist(sql_query):
     return True, None
 
 
-def validate_sql_syntax(sql_query):
-    engine = get_engine()
+def validate_sql_syntax(sql_query, db_url: str = None):
+    engine = get_engine(db_url=db_url)
 
     try:
         with engine.connect() as conn:
@@ -45,19 +44,19 @@ def validate_sql_syntax(sql_query):
         return False, str(e)
 
 
-def validate_sql(sql_query):
+def validate_sql(sql_query, db_url: str = None):
     # 1️⃣ Block dangerous queries
     forbidden, message = contains_forbidden_keywords(sql_query)
     if forbidden:
         return False, message
 
     # 2️⃣ Check tables
-    tables_ok, message = validate_tables_exist(sql_query)
+    tables_ok, message = validate_tables_exist(sql_query, db_url=db_url)
     if not tables_ok:
         return False, message
 
     # 3️⃣ Check syntax using EXPLAIN
-    syntax_ok, message = validate_sql_syntax(sql_query)
+    syntax_ok, message = validate_sql_syntax(sql_query, db_url=db_url)
     if not syntax_ok:
         return False, f"SQL Syntax Error: {message}"
 

@@ -1,29 +1,14 @@
 import os
 from dotenv import load_dotenv
-#from langchain_openai import ChatOpenAI
 from langchain_openai import AzureChatOpenAI
-
+import time
 
 load_dotenv()
 
-MAX_RETRIES = 3
-
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-
 AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
-LLM_MODEL = "gpt-4.1-mini"
-
-
-
-# def get_llm():
-#     return ChatOpenAI(
-#         base_url="https://openrouter.ai/api/v1",
-#         model="stepfun/step-3.5-flash:free",
-#         api_key=OPENROUTER_API_KEY,
-#         temperature=0,
-#     )
-
+#LLM_MODEL = "gpt-4.1-mini"
+LLM_MODEL = "gpt-4.1"
 
 
 _llm_instance = None
@@ -45,5 +30,21 @@ def get_llm():
 
 
 
+def measure_latency(llm, prompt: str):
+    start_time = time.perf_counter()  
+
+    response = llm.invoke(prompt)
+
+    end_time = time.perf_counter()
+
+    latency = end_time - start_time
+
+    print(f"Response: {response.content}")
+    print(f"Latency: {latency:.3f} seconds")
+
+    return latency
 
 
+# Usage
+llm = get_llm()
+measure_latency(llm, "Explain what are LLMs.")

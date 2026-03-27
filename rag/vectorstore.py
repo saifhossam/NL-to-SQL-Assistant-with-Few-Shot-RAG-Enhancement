@@ -8,15 +8,15 @@ from rag.embeddings import get_embeddings
 CHROMA_PATH = "rag/chroma_store"
 
 
-def build_vectorstore():
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(BASE_DIR, "example_data.json")
-
-    with open(file_path, "r") as f:
-        data = json.load(f)
+def build_vectorstore(data=None):
+    """Build vectorstore from a list of dicts or from the default example_data.json."""
+    if data is None:
+        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(BASE_DIR, "example_data.json")
+        with open(file_path, "r") as f:
+            data = json.load(f)
 
     documents = []
-
     for item in data:
         content = f"Question: {item['question']}\nSQL: {item['sql']}"
         documents.append(Document(page_content=content))
@@ -27,7 +27,7 @@ def build_vectorstore():
         persist_directory=CHROMA_PATH
     )
 
-    #vectorstore.persist()
+    return vectorstore
 
 
 if __name__ == "__main__":
