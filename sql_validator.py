@@ -14,24 +14,6 @@ def contains_forbidden_keywords(sql_query):
     return False, None
 
 
-def validate_tables_exist(sql_query, db_url: str = None):
-    tables = list_all_tables(db_url=db_url)
-
-    found_tables = re.findall(r'FROM\s+"?(\w+)"?|JOIN\s+"?(\w+)"?', sql_query, re.IGNORECASE)
-
-    extracted = []
-    for t1, t2 in found_tables:
-        if t1:
-            extracted.append(t1)
-        if t2:
-            extracted.append(t2)
-
-    for table in extracted:
-        if table not in tables:
-            return False, f"Table '{table}' does not exist."
-
-    return True, None
-
 
 def validate_sql_syntax(sql_query, db_url: str = None):
     engine = get_engine(db_url=db_url)
@@ -50,12 +32,8 @@ def validate_sql(sql_query, db_url: str = None):
     if forbidden:
         return False, message
 
-    # 2️⃣ Check tables
-    tables_ok, message = validate_tables_exist(sql_query, db_url=db_url)
-    if not tables_ok:
-        return False, message
 
-    # 3️⃣ Check syntax using EXPLAIN
+    # 2️⃣ Check syntax using EXPLAIN
     syntax_ok, message = validate_sql_syntax(sql_query, db_url=db_url)
     if not syntax_ok:
         return False, f"SQL Syntax Error: {message}"
