@@ -13,6 +13,6 @@ def retrieve_examples(question):
 
     if retriever is None:
         return None
-
+    
     docs = retriever.invoke(question)
     return "\n\n".join([doc.page_content for doc in docs])
