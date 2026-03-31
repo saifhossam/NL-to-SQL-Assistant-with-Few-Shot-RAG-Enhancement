@@ -78,7 +78,7 @@ User Question
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/Ahmed-Essam-Hammam/Text-to-SQL-Assistant-with-Few-Shot-RAG-Enhancement
 cd SQL_CHAT
 ```
 
