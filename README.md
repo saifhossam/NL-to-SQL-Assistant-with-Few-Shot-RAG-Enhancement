@@ -32,9 +32,9 @@ SQL_CHAT/
 ## ⚙️ How It Works
 
 ```
-User Question
-     │
-     ▼
+    User Question
+         │
+         ▼
 ┌─────────────────────┐
 │  Relevance Check    │  → Blocks off-topic questions
 └────────┬────────────┘
