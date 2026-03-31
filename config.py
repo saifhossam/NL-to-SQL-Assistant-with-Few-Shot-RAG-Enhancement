@@ -6,6 +6,8 @@ load_dotenv()
 
 
 MAX_RETRIES = 5
+ROW_LIMIT = 10
+
 
 AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
