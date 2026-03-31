@@ -5,10 +5,22 @@ from langchain_openai import AzureChatOpenAI
 load_dotenv()
 
 
-MAX_RETRIES = 5
-ROW_LIMIT = 10
+MAX_RETRIES = 5      # Max number of retries before applying the fallback
+ROW_LIMIT = 10       # Number of rows will be shown if the generated SQL query outputs a large number of records
 
 
+# Embedding Model
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+VECTOR_SIZE = 384
+
+
+# Qdrant Setup
+COLLECTION_NAME = "few_shot_examples"
+QDRANT_URL = os.getenv("QDRANT_URL")
+QDRANT_API_KEY = os.getenv("QDRANT_API_KEY")
+
+
+# Azure Settings
 AZURE_ENDPOINT = os.getenv("AZURE_ENDPOINT")
 AZURE_API_KEY = os.getenv("AZURE_API_KEY")
 LLM_MODEL = "gpt-4.1-mini"
