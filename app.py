@@ -4,12 +4,13 @@ import shutil
 import time
 import streamlit as st
 from dotenv import load_dotenv
-from config import MAX_RETRIES
+from config import MAX_RETRIES, ROW_LIMIT
 from database import get_schema, execute_sql_query, get_engine
 from table_selector import get_relevant_tables
-from sql_generator import get_sql, fix_sql
+from sql_generator import get_sql, fix_sql, get_fallback_suggestions
 from answer_generator import get_natural_response
 from sql_validator import validate_sql
+from chains import relevance_chain
 from rag.retriever import retrieve_examples
 from rag.vectorstore import build_vectorstore, CHROMA_PATH
 
@@ -664,7 +665,25 @@ if question:
         relevant_tables = get_relevant_tables(question, db_url=active_db_url)
         schema = get_schema(relevant_tables, db_url=active_db_url)
 
-        # ── Step 3: Generate SQL ───────────────────────────────────────────────
+        # ── Step 3: Relevance check ────────────────────────────────────────────
+        relevance = relevance_chain.invoke({"question": question, "schema": schema}).strip().upper()
+
+        if relevance != "YES":
+            st.markdown("""
+            <div class="off-topic-card">
+                <div style="font-size:1.8rem; margin-bottom:0.75rem">🚫</div>
+                <div style="font-family:'Syne',sans-serif; font-size:1rem; font-weight:700; color:#e2e8f0; margin-bottom:0.4rem">
+                    Question not related to the database
+                </div>
+                <div style="font-size:1.1rem; color:#64748b; line-height:1.6;">
+                    This question cannot be answered using the available data.<br>
+                    Try asking something about your database tables and records.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            st.stop()
+
+        # ── Step 4: Generate SQL ───────────────────────────────────────────────
         sql_query = get_sql(question, schema, examples=examples)
 
         # ── Step 4: Validate + auto-correct ───────────────────────────────────
@@ -688,17 +707,44 @@ if question:
                 sql_query = fix_sql(sql_query, validation_message, schema)
 
         # ── Generated SQL block ────────────────────────────────────────────────
-        #st.markdown('<div class="result-card">', unsafe_allow_html=True)
+
         st.markdown('<div class="result-card-title">Generated SQL</div>', unsafe_allow_html=True)
 
         if attempt > 0 and is_valid:
             st.markdown(
-                f'<div class="corrected-badge" style="margin-bottom:0.75rem">✓ &nbsp;Auto-corrected in {attempt} pass{"es" if attempt > 1 else ""}</div>',
+                f'<div class="corrected-badge">✓ &nbsp;Auto-corrected in {attempt} pass{"es" if attempt > 1 else ""}</div>',
                 unsafe_allow_html=True,
             )
 
         st.code(sql_query, language="sql")
         st.markdown('</div>', unsafe_allow_html=True)
+
+        if not is_valid:
+            # ── Fallback: generate validated alternative suggestions ───────────
+            with st.spinner("Finding alternative queries..."):
+                suggestions = get_fallback_suggestions(question, schema, db_url=active_db_url)
+
+            st.markdown("""
+            <div class="off-topic-card">
+                <div style="font-size:1.6rem; margin-bottom:0.6rem">🔍</div>
+                <div style="font-family:'Syne',sans-serif; font-size:1rem; font-weight:700; color:#e2e8f0; margin-bottom:0.4rem">
+                    Couldn't find relevant information for your query
+                </div>
+                <div style="font-size:0.82rem; color:#64748b; line-height:1.6;">
+                    The system was unable to generate a working SQL query after multiple attempts.<br>
+                    Did you mean one of these?
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if suggestions:
+                for i, suggestion in enumerate(suggestions, 1):
+                    with st.expander(f"💡 Suggestion {i}: {suggestion['question']}", expanded=True):
+                        st.code(suggestion["sql"], language="sql")
+            else:
+                st.info("No alternative suggestions could be generated for this query.")
+
+            st.stop()
 
         # ── Validation result ──────────────────────────────────────────────────
         if not is_valid:
@@ -709,9 +755,18 @@ if question:
 
         # ── Execute & display ──────────────────────────────────────────────────
         result = execute_sql_query(sql_query, db_url=active_db_url)
+        is_limited = False
 
-        #st.markdown('<div class="result-card">', unsafe_allow_html=True)
+        if hasattr(result, "__len__") and len(result) > ROW_LIMIT:
+            is_limited = True
+            result = result.head(ROW_LIMIT)
+
         st.markdown('<div class="result-card-title">Query Result</div>', unsafe_allow_html=True)
+        if is_limited:
+            st.markdown(
+                f'<div class="limited-badge">⚠ &nbsp;Showing first {ROW_LIMIT} of many records</div>',
+                unsafe_allow_html=True,
+            )
         st.dataframe(result, use_container_width=True)
         st.markdown('</div>', unsafe_allow_html=True)
 
