@@ -1,6 +1,5 @@
 import os
 import json
-import shutil
 import time
 import streamlit as st
 from dotenv import load_dotenv
@@ -12,14 +11,14 @@ from answer_generator import get_natural_response
 from sql_validator import validate_sql
 from chains import relevance_chain
 from rag.retriever import retrieve_examples
-from rag.vectorstore import build_vectorstore, CHROMA_PATH
+from rag.vectorstore import build_vectorstore, clear_vectorstore
 
 load_dotenv()
 
 if "session_initialized" not in st.session_state:
-    if os.path.exists(CHROMA_PATH):
-        shutil.rmtree(CHROMA_PATH)
+    clear_vectorstore()
     st.session_state["session_initialized"] = True
+
 
 st.set_page_config(
     page_title="SQL ChatBot",
