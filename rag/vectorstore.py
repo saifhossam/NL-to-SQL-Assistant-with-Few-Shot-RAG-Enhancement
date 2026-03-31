@@ -1,35 +1,53 @@
 import os
-import json
-from langchain_chroma import Chroma
+from langchain_qdrant import QdrantVectorStore
 from langchain_core.documents import Document
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams
 from rag.embeddings import get_embeddings
+from config import COLLECTION_NAME, VECTOR_SIZE, QDRANT_API_KEY, QDRANT_URL
 
 
-CHROMA_PATH = "rag/chroma_store"
 
 
-def build_vectorstore(data=None):
-    """Build vectorstore from a list of dicts or from the default example_data.json."""
-    if data is None:
-        BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-        file_path = os.path.join(BASE_DIR, "example_data.json")
-        with open(file_path, "r") as f:
-            data = json.load(f)
+def get_qdrant_client():
+    return QdrantClient(
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY
+    )
 
-    documents = []
-    for item in data:
-        content = f"Question: {item['question']}\nSQL: {item['sql']}"
-        documents.append(Document(page_content=content))
 
-    vectorstore = Chroma.from_documents(
+def build_vectorstore(data):
+    """Build vectorstore in Qdrant Cloud from a list of {question, sql} dicts."""
+    client = get_qdrant_client()
+
+    # Always recreate the collection to avoid stale data
+    client.recreate_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE)
+    )
+
+
+    documents = [
+        Document(page_content=f"Question: {item['question']}\nSQL: {item['sql']}")
+        for item in data
+    ]
+
+
+    vectorstore = QdrantVectorStore.from_documents(
         documents=documents,
         embedding=get_embeddings(),
-        persist_directory=CHROMA_PATH
+        url=QDRANT_URL,
+        api_key=QDRANT_API_KEY,
+        collection_name=COLLECTION_NAME
     )
+
 
     return vectorstore
 
 
-if __name__ == "__main__":
-    build_vectorstore()
-    print("✅ Vectorstore built.")
+def clear_vectorstore():
+    """Delete the collection — called on session start."""
+    client = get_qdrant_client()
+    collections = [c.name for c in client.get_collections().collections]
+    if COLLECTION_NAME in collections:
+        client.delete_collection(COLLECTION_NAME)
