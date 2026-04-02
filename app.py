@@ -1,14 +1,15 @@
 import os
+import io
 import json
 import time
 import streamlit as st
 from dotenv import load_dotenv
-from config import MAX_RETRIES, ROW_LIMIT
+from config import MAX_RETRIES, ROW_LIMIT, LOG_LATENCY
 from database import get_schema, execute_sql_query, get_engine
 from table_selector import get_relevant_tables
-from sql_generator import get_sql, fix_sql, get_fallback_suggestions
+from sql_generator import get_sql, fix_sql, get_fallback_suggestions, invalidate_sql_cache
 from answer_generator import get_natural_response
-from sql_validator import validate_sql
+from sql_validator import validate_sql, get_complexity_warnings
 from chains import relevance_chain
 from rag.retriever import retrieve_examples
 from rag.vectorstore import build_vectorstore, clear_vectorstore
@@ -18,6 +19,9 @@ load_dotenv()
 if "session_initialized" not in st.session_state:
     clear_vectorstore()
     st.session_state["session_initialized"] = True
+
+if "query_history" not in st.session_state:
+    st.session_state["query_history"] = []   # list of {"question", "sql", "rows"}
 
 
 st.set_page_config(
@@ -431,6 +435,84 @@ hr {
     color: var(--text-secondary) !important;
     letter-spacing: 0.04em !important;
 }
+
+/* ── TIMING BADGE ── */
+.timing-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: rgba(14, 165, 233, 0.08);
+    border: 1px solid rgba(14, 165, 233, 0.2);
+    color: var(--accent-cyan);
+    font-size: 0.68rem;
+    padding: 0.18rem 0.55rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    letter-spacing: 0.05em;
+}
+
+/* ── TIMING BREAKDOWN TABLE ── */
+.timing-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    margin-top: 0.5rem;
+}
+.timing-table td { padding: 0.2rem 0.5rem; }
+.timing-table td:last-child { color: var(--accent-cyan); text-align: right; }
+
+/* ── LIMITED BADGE ── */
+.limited-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    color: var(--accent-amber);
+    font-size: 0.7rem;
+    padding: 0.2rem 0.6rem;
+    border-radius: 4px;
+    font-family: var(--font-mono);
+    letter-spacing: 0.04em;
+    margin-bottom: 0.5rem;
+}
+
+/* ── WARNING BADGE ── */
+.warning-badge {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.4rem;
+    background: rgba(245, 158, 11, 0.06);
+    border: 1px solid rgba(245, 158, 11, 0.2);
+    border-radius: 5px;
+    padding: 0.45rem 0.7rem;
+    font-size: 0.72rem;
+    color: var(--accent-amber);
+    font-family: var(--font-mono);
+    margin: 0.3rem 0;
+    line-height: 1.5;
+}
+
+/* ── HISTORY ITEM ── */
+.history-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 0.5rem 0.75rem;
+    margin-bottom: 0.4rem;
+    font-size: 0.72rem;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: border-color 0.2s, color 0.2s;
+    word-break: break-word;
+}
+.history-item:hover {
+    border-color: var(--accent-cyan);
+    color: var(--text-primary);
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -618,6 +700,30 @@ with st.sidebar:
     else:
         st.markdown('<span class="status-badge status-disconnected">○ No examples — few-shot off</span>', unsafe_allow_html=True)
 
+    st.divider()
+
+    # — Query History —
+    st.markdown('<div class="sidebar-section-title">Query History</div>', unsafe_allow_html=True)
+
+    history = st.session_state.get("query_history", [])
+    if history:
+        for i, entry in enumerate(reversed(history[-10:])):   # show last 10
+            label = entry["question"][:60] + ("…" if len(entry["question"]) > 60 else "")
+            rows_label = f"{entry['rows']} row{'s' if entry['rows'] != 1 else ''}"
+            st.markdown(
+                f'<div class="history-item">🕑 {label}<br>'
+                f'<span style="opacity:0.5;font-size:0.65rem">{rows_label}</span></div>',
+                unsafe_allow_html=True,
+            )
+        if st.button("🗑  Clear History"):
+            st.session_state["query_history"] = []
+            st.rerun()
+    else:
+        st.markdown(
+            '<span class="status-badge status-disconnected">○ No queries yet</span>',
+            unsafe_allow_html=True,
+        )
+
 
 # ── Resolve active DB URL ──────────────────────────────────────────────────────
 active_db_url = st.session_state.get("db_url", default_url)
@@ -651,17 +757,23 @@ st.caption("Natural language · PostgreSQL · RAG-enhanced generation")
 if question:
     st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
     total_start = time.perf_counter()
+    timings: dict[str, float] = {}
+
     with st.spinner(""):
 
-        # ── Step 1: Retrieve examples ──────────────────────────────────────────
+        # ── Step 1: Retrieve examples ──────────────────────────────────────
+        t0 = time.perf_counter()
         examples = retrieve_examples(question)
+        timings["RAG retrieval"] = time.perf_counter() - t0
 
         if examples:
             with st.expander("📎  Few-shot context retrieved", expanded=False):
                 st.code(examples, language="text")
 
-        # ── Step 2: Build schema ───────────────────────────────────────────────
+        # ── Step 2: Build schema ───────────────────────────────────────────
+        t0 = time.perf_counter()
         relevant_tables = get_relevant_tables(question, db_url=active_db_url)
+        timings["Table selection"] = time.perf_counter() - t0
 
         if relevant_tables == "__INJECTION__":
             st.markdown("""
@@ -678,10 +790,14 @@ if question:
             """, unsafe_allow_html=True)
             st.stop()
 
+        t0 = time.perf_counter()
         schema = get_schema(relevant_tables, db_url=active_db_url)
+        timings["Schema fetch"] = time.perf_counter() - t0
 
-        # ── Step 3: Relevance check ────────────────────────────────────────────
+        # ── Step 3: Relevance check ────────────────────────────────────────
+        t0 = time.perf_counter()
         relevance = relevance_chain.invoke({"question": question, "schema": schema}).strip().upper()
+        timings["Relevance check"] = time.perf_counter() - t0
 
         if relevance != "YES":
             st.markdown("""
@@ -698,14 +814,17 @@ if question:
             """, unsafe_allow_html=True)
             st.stop()
 
-        # ── Step 4: Generate SQL ───────────────────────────────────────────────
+        # ── Step 4: Generate SQL ───────────────────────────────────────────
+        t0 = time.perf_counter()
         sql_query = get_sql(question, schema, examples=examples)
+        timings["SQL generation"] = time.perf_counter() - t0
 
-        # ── Step 4: Validate + auto-correct ───────────────────────────────────
+        # ── Step 5: Validate + auto-correct ───────────────────────────────
         attempt = 0
         is_valid = False
         validation_message = ""
 
+        t0 = time.perf_counter()
         while attempt < MAX_RETRIES:
             is_valid, validation_message = validate_sql(sql_query, db_url=active_db_url)
 
@@ -719,10 +838,13 @@ if question:
                     f'<div class="retry-badge">⟳ &nbsp;Auto-correcting · attempt {attempt}/{MAX_RETRIES - 1}</div>',
                     unsafe_allow_html=True,
                 )
+                # Invalidate cache so a re-ask generates fresh SQL
+                invalidate_sql_cache(question)
                 sql_query = fix_sql(sql_query, validation_message, schema)
 
-        # ── Generated SQL block ────────────────────────────────────────────────
+        timings["Validation + fix"] = time.perf_counter() - t0
 
+        # ── Generated SQL block ────────────────────────────────────────────
         st.markdown('<div class="result-card-title">Generated SQL</div>', unsafe_allow_html=True)
 
         if attempt > 0 and is_valid:
@@ -732,10 +854,18 @@ if question:
             )
 
         st.code(sql_query, language="sql")
+
+        # ── Complexity warnings (non-blocking) ────────────────────────────
+        warnings = get_complexity_warnings(sql_query)
+        if warnings:
+            with st.expander(f"⚠️  {len(warnings)} query warning{'s' if len(warnings) > 1 else ''}", expanded=False):
+                for w in warnings:
+                    st.markdown(f'<div class="warning-badge">⚠ {w}</div>', unsafe_allow_html=True)
+
         st.markdown('</div>', unsafe_allow_html=True)
 
         if not is_valid:
-            # ── Fallback: generate validated alternative suggestions ───────────
+            # ── Fallback: generate validated alternative suggestions ───────
             with st.spinner("Finding alternative queries..."):
                 suggestions = get_fallback_suggestions(question, schema, db_url=active_db_url)
 
@@ -761,15 +891,18 @@ if question:
 
             st.stop()
 
-        # ── Validation result ──────────────────────────────────────────────────
+        # ── Validation result ──────────────────────────────────────────────
         if not is_valid:
             st.error(f"Validation failed after {MAX_RETRIES} attempts — {validation_message}")
             st.stop()
 
         st.success("SQL validated ✓")
 
-        # ── Execute & display ──────────────────────────────────────────────────
+        # ── Execute & display ──────────────────────────────────────────────
+        t0 = time.perf_counter()
         result = execute_sql_query(sql_query, db_url=active_db_url)
+        timings["Query execution"] = time.perf_counter() - t0
+
         is_limited = False
 
         if hasattr(result, "__len__") and len(result) > ROW_LIMIT:
@@ -783,18 +916,66 @@ if question:
                 unsafe_allow_html=True,
             )
         st.dataframe(result, use_container_width=True)
+
+        # ── CSV download ──────────────────────────────────────────────────
+        import pandas as pd
+        if isinstance(result, pd.DataFrame) and not result.empty:
+            csv_buffer = io.StringIO()
+            result.to_csv(csv_buffer, index=False)
+            st.download_button(
+                label="⬇  Download CSV",
+                data=csv_buffer.getvalue(),
+                file_name="query_result.csv",
+                mime="text/csv",
+                use_container_width=False,
+            )
+
         st.markdown('</div>', unsafe_allow_html=True)
 
-        # ── Natural language answer ────────────────────────────────────────────
-        final_answer = get_natural_response(question, result)
+        # ── Natural language answer ────────────────────────────────────────
+        t0 = time.perf_counter()
+        final_answer = get_natural_response(question, result, is_limited=is_limited)
+        timings["Answer generation"] = time.perf_counter() - t0
 
         total_latency = time.perf_counter() - total_start
-        print(f"🚀 Total End-to-End Latency: {total_latency:.3f} seconds")
+        if LOG_LATENCY:
+            print(f"🚀 Total End-to-End Latency: {total_latency:.3f}s  |  breakdown: {timings}")
 
-        #st.markdown('<div class="result-card">', unsafe_allow_html=True)
+        # ── Per-step timing breakdown ──────────────────────────────────────
+        rows_html = "".join(
+            f"<tr><td>{step}</td><td>{ms:.2f}s</td></tr>"
+            for step, ms in timings.items()
+        )
+        st.markdown(
+            f"""
+            <div style="display:flex;align-items:center;gap:0.75rem;margin:0.75rem 0 0.25rem 0">
+                <span class="timing-badge">⏱ {total_latency:.2f}s total</span>
+                <details style="display:inline;font-size:0.7rem;color:var(--text-secondary);cursor:pointer;font-family:var(--font-mono)">
+                    <summary style="list-style:none;cursor:pointer">breakdown ▾</summary>
+                    <table class="timing-table">{rows_html}</table>
+                </details>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
         st.markdown('<div class="result-card-title">Answer</div>', unsafe_allow_html=True)
         st.markdown(
             f'<div style="font-size:0.95rem; line-height:1.7; color:#e2e8f0;">{final_answer}</div>',
             unsafe_allow_html=True,
         )
         st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Append to query history ────────────────────────────────────────
+        import pandas as _pd
+        row_count = len(result) if isinstance(result, _pd.DataFrame) else 0
+        history_entry = {
+            "question": question,
+            "sql": sql_query,
+            "rows": row_count,
+        }
+        history = st.session_state.get("query_history", [])
+        # Avoid duplicating the most recent identical question
+        if not history or history[-1]["question"] != question:
+            history.append(history_entry)
+        st.session_state["query_history"] = history
