@@ -9,12 +9,12 @@ A conversational interface for querying PostgreSQL databases using natural langu
 ```
 SQL_CHAT/
 ├── app.py                  # Main Streamlit app (styled terminal UI)
-├── chains.py               # LangChain chain definitions
-├── config.py               # LLM setup and environment config
-├── database.py             # DB connection, schema extraction, query execution
+├── chains.py               # LangChain chain definitions + safe_invoke() injection guard
+├── config.py               # LLM setup, environment config, and feature flags
+├── database.py             # DB connection, TTL-cached schema extraction, query execution
 ├── prompts.py              # Prompt templates (SQL gen, answer, table selector, relevance, fallback)
-├── sql_generator.py        # SQL generation, fixing, and fallback suggestions
-├── sql_validator.py        # SQL safety and syntax validation
+├── sql_generator.py        # SQL generation with in-memory caching, fixing, and fallback suggestions
+├── sql_validator.py        # SQL safety, syntax validation, and complexity warnings
 ├── table_selector.py       # Selects relevant tables for a given question
 ├── answer_generator.py     # Converts SQL results to natural language answers
 ├── test_latency.py         # Check the latency of the LLM
@@ -36,6 +36,11 @@ SQL_CHAT/
          │
          ▼
 ┌─────────────────────┐
+│  Injection Guard    │  → Screens input for prompt-injection patterns before any LLM call
+└────────┬────────────┘
+         │
+         ▼
+┌─────────────────────┐
 │  Relevance Check    │  → Blocks off-topic questions
 └────────┬────────────┘
          │
@@ -51,14 +56,19 @@ SQL_CHAT/
          │
          ▼
 ┌─────────────────────┐
-│   SQL Generator     │  → LLM generates a PostgreSQL query using schema + examples
+│   Schema Fetcher    │  → Retrieves schema with TTL caching (default: 5 min)
 └────────┬────────────┘
          │
          ▼
 ┌─────────────────────┐
-│   SQL Validator     │  → Blocks dangerous keywords, validates tables & syntax
+│   SQL Generator     │  → LLM generates a PostgreSQL query (cached by question hash)
 └────────┬────────────┘
-         │        └── on failure → Auto-correct (up to 5 retries)
+         │
+         ▼
+┌─────────────────────┐
+│   SQL Validator     │  → Blocks dangerous keywords, validates syntax via EXPLAIN
+└────────┬────────────┘       └── Non-blocking complexity warnings (SELECT *, no LIMIT, etc.)
+         │        └── on failure → Auto-correct (up to 5 retries, cache invalidated each time)
          │                              └── still failing → Fallback suggestions
          ▼
 ┌─────────────────────┐
@@ -68,6 +78,11 @@ SQL_CHAT/
          ▼
 ┌─────────────────────┐
 │  Answer Generator   │  → LLM converts data into a natural language response
+└────────┬────────────┘       └── Guards: empty DataFrame & SQL error strings handled without LLM call
+         │
+         ▼
+┌─────────────────────┐
+│  Timing + History   │  → Per-step latency displayed in UI; query logged to history panel
 └─────────────────────┘
 ```
 
@@ -160,16 +175,23 @@ The sidebar provides three ways to manage few-shot examples:
 
 ---
 
-## 🛡️ SQL Validation
+## 🛡️ SQL Validation & Safety
 
-Before any query is executed, it passes through a two-layer validation pipeline:
+Before any query is executed, it passes through a multi-layer validation and safety pipeline:
 
-1. **Forbidden keyword check** — blocks `DROP`, `DELETE`, `UPDATE`, `INSERT`, `ALTER`, `TRUNCATE`
-2. **Syntax check** — runs `EXPLAIN` on the query to catch PostgreSQL syntax errors
+1. **Prompt injection guard** — `safe_invoke()` in `chains.py` screens every user input against regex patterns that detect attempts to override system instructions (e.g. "ignore previous instructions", "you are now…"). Flagged inputs return a sentinel value immediately — no LLM tokens are spent.
+2. **Forbidden keyword check** — blocks `DROP`, `DELETE`, `UPDATE`, `INSERT`, `ALTER`, `TRUNCATE`
+3. **Syntax check** — runs `EXPLAIN` on the query to catch PostgreSQL syntax errors
+4. **Complexity warnings** — non-blocking advisory checks surfaced in the UI:
+   - `SELECT *` with no column projection
+   - Missing `WHERE` on non-aggregate queries (potential full-table scan)
+   - Missing `LIMIT` on non-aggregate queries (potentially huge result sets)
+   - Multiple leading-wildcard `LIKE '%…'` patterns (index-unfriendly)
+   - Cartesian product detected (comma-joined tables with no condition)
 
 ### Auto-correction
 
-If validation fails, the broken SQL and the exact error are sent back to the LLM to fix. This retries up to **5 times**. Each retry is shown in the UI with an amber badge.
+If validation fails, the broken SQL and the exact error are sent back to the LLM to fix. The fix prompt now includes a step-by-step chain-of-thought instruction to improve repair quality. This retries up to **5 times**. The SQL cache is invalidated on each retry so a fresh query is generated. Each retry is shown in the UI with an amber badge.
 
 ### Fallback suggestions
 
@@ -182,29 +204,54 @@ If all retries are exhausted, instead of showing a raw error the system:
 
 ---
 
-## 🔒 Security & Robustness
+## ⚡ Performance Optimisations
 
-### Off-topic question handling
+### Schema caching (TTL-based)
 
-A dedicated relevance check runs before SQL generation. If the question cannot be answered using the database schema — or contains a prompt injection attempt — the app shows a clear message and stops processing without calling the database.
+`get_schema()` in `database.py` caches fetched schemas in `st.session_state` for `SCHEMA_CACHE_TTL` seconds (default: 300 s). Repeated questions on the same set of tables skip the `information_schema` round-trip entirely until the cache expires. Set `SCHEMA_CACHE_TTL = 0` in `config.py` to disable.
 
-### Large result limiting
+### SQL query caching
 
-If a query returns more than **10 rows**, the results are automatically trimmed to 10 and the answer includes a note informing the user that the output has been limited.
+When `QUERY_CACHE_ENABLED = True` (default), `get_sql()` in `sql_generator.py` computes an MD5 hash of the normalised question and stores the generated SQL in `st.session_state`. Identical follow-up questions return the cached SQL instantly with zero LLM calls. The cache entry is automatically invalidated when auto-correction runs, so a repaired query always replaces the stale one.
+
+### Connection pooling
+
+The SQLAlchemy engine is created with `pool_pre_ping=True` (silently drops stale connections before use) and `pool_recycle=1800` (recycles connections every 30 minutes) to prevent connection-timeout errors on long-running sessions.
+
+---
+
+## 📊 UI Enhancements
+
+### Per-step timing display
+
+Every pipeline step is timed independently and displayed after each response as a `⏱ X.XXs total` badge. Clicking `breakdown ▾` expands a table showing the latency for each step (RAG retrieval, table selection, schema fetch, relevance check, SQL generation, validation + fix, query execution, answer generation).
+
+### CSV download
+
+A **⬇ Download CSV** button appears below the results dataframe whenever the query returns data, allowing users to export results with one click.
+
+### Query history panel
+
+The sidebar shows the last 10 successful questions with their row counts. A **Clear History** button resets the list. Consecutive duplicate questions are suppressed.
 
 ---
 
 ## 🔧 Configuration
 
-| Variable | Description |
-|---|---|
-| `AZURE_ENDPOINT` | Endpoint for Microsoft Azure OpenAI |
-| `AZURE_API_KEY` | API key for Azure inference |
-| `DB_URL` | PostgreSQL connection string (SQLAlchemy format) |
-| `QDRANT_URL` | Qdrant Cloud cluster URL |
-| `QDRANT_API_KEY` | Qdrant Cloud API key |
+| Variable | Default | Description |
+|---|---|---|
+| `AZURE_ENDPOINT` | — | Endpoint for Microsoft Azure OpenAI |
+| `AZURE_API_KEY` | — | API key for Azure inference |
+| `DB_URL` | — | PostgreSQL connection string (SQLAlchemy format) |
+| `QDRANT_URL` | — | Qdrant Cloud cluster URL |
+| `QDRANT_API_KEY` | — | Qdrant Cloud API key |
+| `SCHEMA_CACHE_TTL` | `300` | Seconds before a cached schema is refreshed (0 = disabled) |
+| `QUERY_CACHE_ENABLED` | `True` | Cache generated SQL by question hash to skip duplicate LLM calls |
+| `LOG_LATENCY` | `True` | Print per-step and total latency to stdout |
+| `MAX_RETRIES` | `5` | Max auto-correction attempts before triggering fallback |
+| `ROW_LIMIT` | `10` | Max rows shown when a query returns a large result set |
 
-LLM settings are in `config.py`. Embedding model settings are in `rag/embeddings.py`.
+LLM settings (`LLM_MODEL`, `AZURE_ENDPOINT`) are in `config.py`. Embedding model settings are in `rag/embeddings.py`.
 
 ---
 
@@ -226,3 +273,4 @@ LLM settings are in `config.py`. Embedding model settings are in `rag/embeddings
 - The schema inspector automatically fetches column names, data types, and sample values to give the LLM rich context.
 - If no relevant tables are found by the table selector, the full schema is used as a fallback.
 - Few-shot examples are stored only in memory and in Qdrant Cloud — no local files are created or modified.
+- `safe_invoke()` screens inputs before every LLM call that accepts user text, not just the table selector.
